@@ -20,6 +20,23 @@ from .tailor import TailorRequest, suggestable_keywords
 
 ctk.set_appearance_mode("dark")
 
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+
+
+def set_app_icon(win) -> None:
+    """Show the ATS Scout logo in the window / Dock / taskbar. Never fails the app if the file is missing."""
+    try:
+        import tkinter as tk
+        png = ASSETS / "logo_256.png"
+        if png.exists():
+            win._logo_img = tk.PhotoImage(file=str(png))  # keep a reference
+            win.iconphoto(True, win._logo_img)
+        ico = ASSETS / "logo.ico"
+        if sys.platform.startswith("win") and ico.exists():
+            win.iconbitmap(str(ico))
+    except Exception:
+        pass
+
 # --- palette: navy base, orange + red accents -------------------------------------------------
 BG, SIDEBAR, PANEL = "#0A1226", "#0F1A36", "#121E3F"
 CARD, LINE = "#1A2850", "#2B3C6B"
@@ -208,6 +225,7 @@ class App(ctk.CTk):
         self.configure(fg_color=BG)
         self.geometry("1240x800")
         self.minsize(1040, 680)
+        self.after(250, lambda: set_app_icon(self))  # after customtkinter sets its own default icon
         self.cv_path: str | None = None
         self.analysis: Analysis | None = None
         self.analysis_jd = ""

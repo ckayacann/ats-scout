@@ -7,3 +7,4 @@ dist/
 *.spec
 tests/samples/
 .pytest_cache/
+.DS_Store

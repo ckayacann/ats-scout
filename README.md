@@ -167,6 +167,7 @@ All checks are plain, open rules you can read in [`ats_scout/analyzer.py`](ats_s
 | `python` is not recognised (Windows) | Re-install Python and tick **Add python.exe to PATH**, or use `py main.py`. |
 | `No module named tkinter` (Linux) | `sudo apt install python3-tk` |
 | `No module named _tkinter` (macOS, Homebrew Python) | `brew install python-tk@3.14` (match your Python version, e.g. `python-tk@3.12`), then delete and re-create the `venv`. |
+| `reportlab requires 3.10+` or `needs Python 3.10 or newer` | Your `venv` was created with an old Python (macOS ships 3.9). Install a newer one (`brew install python@3.13 python-tk@3.13` or from python.org), delete the `venv` folder, then create it again with the new Python, e.g. `/opt/homebrew/bin/python3.13 -m venv venv`. Check with `python --version` after activating. |
 | `No module named customtkinter` | The virtual environment is not active. Run the activate command again, then `pip install -r requirements.txt`. |
 | "No readable text layer" | Your CV is a scan or image. Export it again as a text-based PDF. |
 | Turkish letters look wrong in the fixed PDF | The app uses Arial/Calibri (Windows, macOS) or DejaVu (Linux). Install one of them. |

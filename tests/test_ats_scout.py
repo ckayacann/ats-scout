@@ -217,3 +217,19 @@ def test_tracked_letters_and_split_words():
     xs = [0, 10, 20, 30, 40, 57, 67]                      # "About" + wide gap + "me"
     ws = fix_tracking([mk(c, x) for c, x in zip("Aboutme", xs)])
     assert [w["text"] for w in ws] == ["About", "me"]
+
+
+def test_summary_without_heading_is_found():
+    from ats_scout.analyzer import split_sections
+
+    text = (
+        "A. Designer\n"
+        "+90 555 000 00 00 a@b.com\n"
+        "Dijital ve basili grafik tasarim alaninda deneyimli, 3D ve VR projelerinden gelen gorsel uretim\n"
+        "becerisiyle farklilasan bir grafik tasarimciyim. Kamu ve vakif projelerinde sosyal medya ve\n"
+        "baski tasarimlari uzerinde calistim.\n"
+        "EGITIM\nAnadolu Universitesi\n"
+    )
+    header, sections = split_sections(text)
+    assert sections[0][0] == "summary"
+    assert header == ["A. Designer", "+90 555 000 00 00 a@b.com"]

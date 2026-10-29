@@ -104,7 +104,71 @@ def _hex_color(c) -> str | None:
         return None
     if max(r, g, b) < 0.12 or min(r, g, b) > 0.92:
         return None
+    if 0.299 * r + 0.587 * g + 0.114 * b > 0.62:   # light text (cream, pastel...) was drawn on a dark/coloured page; our page is white
+        return None
     return "#%02x%02x%02x" % tuple(max(0, min(255, round(v * 255))) for v in (r, g, b))
+
+
+def _is_light(c) -> bool:
+    """True for white / cream / pastel text colours (text drawn on a dark or coloured page)."""
+    if c is None:
+        return False
+    if isinstance(c, (int, float)):
+        c = (c,)
+    try:
+        c = tuple(float(x) for x in c)
+    except (TypeError, ValueError):
+        return False
+    if len(c) == 1:
+        r = g = b = c[0]
+    elif len(c) == 3:
+        r, g, b = c
+    elif len(c) == 4:
+        r, g, b = ((1 - x) * (1 - c[3]) for x in c[:3])
+    else:
+        return False
+    return 0.299 * r + 0.587 * g + 0.114 * b > 0.62
+
+
+def poster_hint(words: list) -> bool:
+    """Poster-style page: light text on a dark or coloured background, or giant display lettering."""
+    if not words:
+        return False
+    light = sum(1 for w in words if _is_light(w.get("non_stroking_color")))
+    return light / len(words) >= 0.2 or max(float(w.get("size") or 0) for w in words) >= 45
+
+
+def _merge_chips(words: list, shapes: list) -> list:
+    """Skills drawn as rounded 'pills': all words inside one pill become ONE item, so two-line pills stay whole."""
+    chips = [sh for sh in shapes if 45 <= sh["width"] <= 240 and 13 <= sh["height"] <= 50]
+    taken: set[int] = set()
+    merged: list = []
+    for sh in sorted(chips, key=lambda c: (c["top"], c["x0"])):
+        inside = [w for w in words if id(w) not in taken
+                  and sh["x0"] - 2 <= (w["x0"] + w["x1"]) / 2 <= sh["x1"] + 2
+                  and sh["top"] - 2 <= (w["top"] + w["bottom"]) / 2 <= sh["bottom"] + 2]
+        if not 1 <= len(inside) <= 9:
+            continue
+        inside.sort(key=lambda w: (round((w["top"] + w["bottom"]) / 2 / 4), w["x0"]))
+        taken.update(id(w) for w in inside)
+        size = float(inside[0].get("size") or 10)
+        mid = (sh["top"] + sh["bottom"]) / 2
+        merged.append({**inside[0], "text": " ".join(w["text"] for w in inside),
+                       "x0": min(w["x0"] for w in inside), "x1": max(w["x1"] for w in inside),
+                       "top": mid - size * 0.6, "bottom": mid + size * 0.6})
+    return [w for w in words if id(w) not in taken] + merged
+
+
+def _comma_gaps(words: list) -> list:
+    """Items separated by a wide gap on the same row (pills, 'phone  email  site') get a comma between them."""
+    ws = sorted(words, key=lambda w: ((w["top"] + w["bottom"]) / 2, w["x0"]))
+    out = list(ws)
+    for i, a in enumerate(ws[:-1]):
+        b = ws[i + 1]
+        same_row = abs((a["top"] + a["bottom"]) / 2 - (b["top"] + b["bottom"]) / 2) <= 0.45 * float(a.get("size") or 10)
+        if same_row and b["x0"] - a["x1"] > 2.2 * float(a.get("size") or 10) and not a["text"].endswith((",", ".", ":", ";")):
+            out[i] = {**a, "text": a["text"] + ","}
+    return out
 
 
 def _median(xs, default=0.0):
@@ -485,7 +549,7 @@ def _header_zone(words: list, gutter: float) -> tuple | None:
     return zone, name, size, title, contacts
 
 
-def _split_subcolumns(words: list) -> list:
+def _split_subcolumns(words: list, dots: list | None = None) -> list:
     """A block of rows laid out as two side-by-side lists (e.g. two references) is read list by list."""
     ws = sorted(words, key=lambda w: ((w["top"] + w["bottom"]) / 2, w["x0"]))
     rows: list[list] = []
@@ -529,6 +593,9 @@ def _split_subcolumns(words: list) -> list:
                     if (w["x0"] + w["x1"]) / 2 >= cx:
                         shifted[id(w)] = height
             below = bottom
+            for d in (dots or []):
+                if d["yc"] >= below - 1:
+                    d["yc"] += height
             for k in range(j + 1, n):
                 for w in rows[k][1]:
                     if w["top"] >= below - 1:
@@ -931,6 +998,8 @@ def read_pdf_layout(path: str) -> Layout | None:
     links: list[dict] = []
     rules: list[dict] = []
     serif_votes = mono_votes = total_votes = 0
+    light_words = n_words = 0
+    biggest = 0.0
     with pdfplumber.open(path) as pdf:
         if not pdf.pages:
             return None
@@ -944,6 +1013,9 @@ def read_pdf_layout(path: str) -> Layout | None:
             words = fix_tracking(words)
             page_words.append(words)
             for w in words:
+                n_words += 1
+                light_words += 1 if _is_light(w.get("non_stroking_color")) else 0
+                biggest = max(biggest, float(w.get("size") or 0))
                 n = len(w["text"])
                 total_votes += n
                 serif_votes += n if _is_serif(w.get("fontname")) else 0
@@ -955,6 +1027,12 @@ def read_pdf_layout(path: str) -> Layout | None:
                 if h.get("uri"):
                     links.append({"page": pi, "x0": h["x0"], "x1": h["x1"], "top": h["top"], "bottom": h["bottom"],
                                   "uri": h["uri"]})
+            if poster_hint(words):
+                words = _merge_chips(words, list(getattr(page, "curves", []) or []) + list(page.rects))
+                # side-by-side items (two degrees, two lists) are read one after the other; bullet shapes move with the text
+                words = _split_subcolumns(words, [d for d in dots if d["page"] == pi])
+                words = _comma_gaps(words)
+                page_words[-1] = words
             all_lines.extend(_mark_dots(_group_lines(words, pi), dots))
             for ln in page.lines:
                 if abs(ln["top"] - ln["bottom"]) < 1.5:
@@ -976,13 +1054,59 @@ def read_pdf_layout(path: str) -> Layout | None:
     if built is None:
         return None
     blocks, metas, left, right, width = built
+    poster_doc = any(poster_hint(w) for w in page_words)
+    if poster_doc:
+        blocks = _tame_display_text(blocks)
+        for i, b in enumerate(blocks):
+            if i == 1 and not b.heading and len(b.text.split()) < 14:
+                b.align = "center"                      # contact line sits centred under the name
+            elif i > 0 and not b.bullet:
+                b.align, b.left_indent = "left", 0.0
+        # an intro paragraph under the name with no heading: give it one, so every ATS reads it as the summary
+        first_head = next((i for i, b in enumerate(blocks) if b.heading), len(blocks))
+        intro = [i for i in range(1, first_head) if len(blocks[i].text.split()) >= 12]
+        if intro and first_head < len(blocks):
+            tr = is_turkish(" ".join(b.text for b in blocks))
+            h = Block([Run("ÖZET" if tr else "SUMMARY", bold=True)], size=12.0, leading=15.0,
+                      space_before=blocks[first_head].space_before, rule_after=blocks[first_head].rule_after,
+                      rule_color=blocks[first_head].rule_color, heading=True, section="summary")
+            blocks.insert(intro[0], h)
 
     first_page_lines = [l for l in all_lines if l.page == 0]
     top = min(l.top for l in first_page_lines) if first_page_lines else 36
+    if any(poster_hint(w) for w in page_words):
+        top = min(top, 40.0)           # the original's big header artwork is not rebuilt
     bottom = page_h - max(l.bottom for l in all_lines)
     margins = (max(18.0, left), max(18.0, top), max(18.0, page_w - right), max(24.0, min(bottom, 60.0)))
     return Layout(blocks, page_w, page_h, margins,
                   serif=serif_votes > 0.5 * total_votes, mono=mono_votes > 0.5 * total_votes)
+
+
+_GREETING_RE = re.compile(r"^(merhaba|selam|hello|hi|hey|hola|bonjour|hallo)\W*$", re.I)
+
+
+def _tame_display_text(blocks: list, name_pt: float = 22.0, body_max: float = 15.0) -> list:
+    """Poster-style CVs use huge decorative lettering ('MERHABA!', 80 pt names). Drop pure greetings, cap sizes,
+    put the name first and make headings clearly bold, so the rebuilt CV reads like a normal one."""
+    out = list(blocks)
+    while out and out[0].runs and _GREETING_RE.match("".join(r.text for r in out[0].runs).strip()):
+        out.pop(0)
+    name = next((b for b in out[:6] if b.size > body_max), None)
+    for b in out:
+        if b is name:
+            b.size, b.leading = name_pt, name_pt * 1.2
+            for r in b.runs:
+                r.bold = True
+        elif b.size > body_max:
+            b.size, b.leading = body_max, body_max * 1.2
+        if b.heading:
+            b.size, b.leading = 12.0, 15.0
+            for r in b.runs:
+                r.bold = True
+    if name is not None and out.index(name) > 0:
+        out.remove(name)
+        out.insert(0, name)
+    return out
 
 
 def _runs_for(lines: list) -> list:

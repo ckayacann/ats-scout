@@ -107,7 +107,31 @@ def split_sections(text: str):
             header.append(line.strip())
         else:
             current[2].append(line.strip())
+    header, sections = _promote_implicit_summary(header, sections)
     return header, [tuple(s) for s in sections]
+
+
+IMPLICIT_SUMMARY_TITLE = "(no heading)"
+
+
+def _promote_implicit_summary(header: list[str], sections: list):
+    """Many designer CVs put a short self-introduction right under the name, with no 'Summary' heading.
+    A real ATS still reads it as the summary, so treat the closing prose paragraph of the header as one."""
+    if not header or any(s[0] == "summary" for s in sections):
+        return header, sections
+    take = 0
+    for line in reversed(header):
+        words = len(line.split())
+        prose = words >= 5 or (words >= 3 and line.rstrip().endswith((".", "!", "?")) and not line.isupper())
+        if not prose or EMAIL_RE.search(line) or URL_RE.search(line) or PHONE_RE.search(line):
+            break
+        take += 1
+    if take < 2:
+        return header, sections
+    body = header[-take:]
+    if sum(len(x.split()) for x in body) < 20:
+        return header, sections
+    return header[:-take], [["summary", IMPLICIT_SUMMARY_TITLE, body]] + [list(x) for x in sections]
 
 
 # --------------------------------------------------------------------------- regexes
@@ -202,7 +226,7 @@ def _score_summary(lines: list[str], found: bool) -> SectionScore:
         Check(found, 40, "Summary / Profile section exists", "Add a 2-4 sentence 'Summary' with your role, years of experience and top skills."),
         Check(found and 25 <= n <= 110, 30, "Length is 25-110 words",
               "Keep the summary between 25 and 110 words."),
-        Check(found and bool(re.search(r"\d+\+?\s*(years?|yrs?|yil)\b", fold(text))), 15,
+        Check(found and bool(re.search(r"\d+\+?\s*(years?|yrs?|yil)\b|yillara dayanan|yillik|uzun yillar|ogrenci|yeni mezun|student|graduate", fold(text))), 15,
               "Mentions years of experience", "Mention how many years of experience you have (or 'student'/'new graduate')."),
         Check(found and len(FIRST_PERSON_RE.findall(text)) <= 1, 15, "Avoids first-person phrasing",
               "Drop 'I am' / 'My' and start with your title: 'Backend developer with ...'."),
@@ -486,6 +510,10 @@ def analyze(ex: Extracted, job_description: str = "") -> Analysis:
 
     contact = _score_contact(header, ex.text, ex)
     summary = _score_summary(by_key.get("summary", []), "summary" in found)
+    if any(k == "summary" and t == IMPLICIT_SUMMARY_TITLE for k, t, _ in sections):
+        summary.checks.append(Check(False, 1, "Summary has its own heading",
+                                    "Put a heading such as 'Summary' or 'Profile' above this paragraph so every ATS recognises it."))
+        summary.score = _score(summary.checks)
     experience = _score_experience(by_key.get("experience", []), "experience" in found)
     education = _score_education(by_key.get("education", []), "education" in found)
     skills = _score_skills(by_key.get("skills", []), "skills" in found)
